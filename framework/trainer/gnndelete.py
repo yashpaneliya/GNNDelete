@@ -1,3 +1,9 @@
+#########################################
+#                                       #
+#             EDGE DELETION             #
+#                                       #
+#########################################
+
 import os
 import time
 import wandb
@@ -248,6 +254,7 @@ class GNNDeleteTrainer(Trainer):
 
             alpha = 0.5
             loss = alpha * loss_r + (1 - alpha) * loss_l
+
 
             # loss, loss_r, loss_l = self.compute_loss(
             #     model, data, random_loss_fct, compute_random_on, random_layer, local_loss_fct, compute_local_on, local_layer,

@@ -24,6 +24,10 @@ class GCN(nn.Module):
         return x2
 
     def decode(self, z, pos_edge_index, neg_edge_index=None):
+        # pairwise decoder
+        # True value: Edge between nodes or not
+        # Predcited value: Dot product of node embeddings of edge endpoints
+        # Loss function will try to minimize the difference between true and predicted values (In terms of reconstruction loss)
         if neg_edge_index is not None:
             edge_index = torch.cat([pos_edge_index, neg_edge_index], dim=-1)
             logits = (z[edge_index[0]] * z[edge_index[1]]).sum(dim=-1)

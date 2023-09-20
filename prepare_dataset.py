@@ -160,9 +160,10 @@ def process_graph():
         for n in tqdm(graph.nodes(), desc='Two hop neighbors'):
             neighbor_1 = set(graph.neighbors(n))
             neighbor_2 = sum([list(graph.neighbors(i)) for i in neighbor_1], [])
+            # neighbour 2:  [10930, 10943, 611, 1009, 5045, 5379, 5537, 10386, 10918, 10943, 11631, 15631, 16322, 17130]
             neighbor_2 = set(neighbor_2)
             neighbor = neighbor_1 | neighbor_2
-            
+            # neighbour OR op:  {5537, 16322, 611, 5379, 10918, 17130, 11631, 15631, 1009, 10930, 10386, 5045, 10934, 10935, 10943}
             node_to_neighbors[n] = neighbor
 
         two_hop_degree = []
@@ -208,7 +209,7 @@ def process_graph():
                 data.train_pos_edge_index, 
                 num_nodes=dataset[0].num_nodes)
             distant_edges = data.train_pos_edge_index[:, ~mask]
-            print('Number of edges. Local: ', local_edges.shape[1], 'Distant:', distant_edges.shape[1])
+            print('Number of edges. 2-hop Local: ', local_edges.shape[1], 'Distant:', distant_edges.shape[1])
 
             in_mask = mask
             out_mask = ~mask

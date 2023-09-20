@@ -30,7 +30,7 @@ class Trainer:
             'log': []}
         self.logit_all_pair = None
         self.df_pos_edge = []
-
+        # dumping the training args in a json file for future reference
         with open(os.path.join(self.args.checkpoint_dir, 'training_args.json'), 'w') as f:
             json.dump(vars(args), f)
 
@@ -75,22 +75,29 @@ class Trainer:
     def train_fullbatch(self, model, data, optimizer, args):
         start_time = time.time()
         best_valid_loss = 1000000
-
+        # best_valid_loss = valid_loss
+        best_epoch = 1
         data = data.to(device)
+
         for epoch in trange(args.epochs, desc='Epoch'):
             model.train()
 
-            # Positive and negative sample
+            # generates negative samples for training a graph neural network
+            # generates same number of negative edges as positive edges
             neg_edge_index = negative_sampling(
                 edge_index=data.train_pos_edge_index,
                 num_nodes=data.num_nodes,
                 num_neg_samples=data.dtrain_mask.sum())
             
+            # generating node embeddings using the graph neural network
             z = model(data.x, data.train_pos_edge_index)
             # edge = torch.cat([train_pos_edge_index, neg_edge_index], dim=-1)
             # logits = model.decode(z, edge[0], edge[1])
+
+            # 
             logits = model.decode(z, data.train_pos_edge_index, neg_edge_index)
             label = get_link_labels(data.train_pos_edge_index, neg_edge_index)
+            # applying sigmoid and generating cross entropy loss
             loss = F.binary_cross_entropy_with_logits(logits, label)
 
             loss.backward()
@@ -240,6 +247,8 @@ class Trainer:
         else:
             mask = data.dr_mask
         z = model(data.x, data.train_pos_edge_index[:, mask])
+        
+        # decoding and applying sigmoid to get the probability of each edge
         logits = model.decode(z, pos_edge_index, neg_edge_index).sigmoid()
         label = self.get_link_labels(pos_edge_index, neg_edge_index)
 

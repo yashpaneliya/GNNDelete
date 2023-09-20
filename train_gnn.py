@@ -1,3 +1,9 @@
+#########################################
+#                                       #
+#   TRAINING GNNs FOR LINK PREDICTION   #
+#                                       #
+#########################################
+
 import os
 import wandb
 import pickle
@@ -58,6 +64,8 @@ def main():
         assert is_undirected(data.edge_index)
     
     else:
+        # converting to undirected graph while training simple GCNs
+        # because they don't require edge type information
         train_pos_edge_index = to_undirected(data.train_pos_edge_index)
         data.train_pos_edge_index = train_pos_edge_index
         data.dtrain_mask = torch.ones(data.train_pos_edge_index.shape[1], dtype=torch.bool)

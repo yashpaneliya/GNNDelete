@@ -15,7 +15,7 @@ from framework import get_model, get_trainer
 from framework.models.gcn import GCN
 from framework.training_args import parse_args
 from framework.utils import *
-from train_mi import MLPAttacker
+# from train_mi import MLPAttacker
 
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -56,9 +56,10 @@ def get_output(model, node_embedding, data):
 torch.autograd.set_detect_anomaly(True)
 def main():
     args = parse_args()
+    # fetching the original trained model
     original_path = os.path.join(args.checkpoint_dir, args.dataset, args.gnn, 'original', str(args.random_seed))
-    attack_path_all = os.path.join(args.checkpoint_dir, args.dataset, 'member_infer_all', str(args.random_seed))
-    attack_path_sub = os.path.join(args.checkpoint_dir, args.dataset, 'member_infer_sub', str(args.random_seed))
+    # attack_path_all = os.path.join(args.checkpoint_dir, args.dataset, 'member_infer_all', str(args.random_seed))
+    # attack_path_sub = os.path.join(args.checkpoint_dir, args.dataset, 'member_infer_sub', str(args.random_seed))
     seed_everything(args.random_seed)
 
     if 'gnndelete' in args.unlearning_model:
@@ -70,9 +71,9 @@ def main():
         args.checkpoint_dir = os.path.join(
             args.checkpoint_dir, args.dataset, args.gnn, args.unlearning_model, 
             '-'.join([str(i) for i in [args.df, args.df_size, args.random_seed]]))
-    os.makedirs(args.checkpoint_dir, exist_ok=True)
+    os.makedirs(args.checkpoint_dir, exist_ok=True) 
 
-    # Dataset
+    # Loading dataset
     with open(os.path.join(args.data_dir, args.dataset, f'd_{args.random_seed}.pkl'), 'rb') as f:
         dataset, data = pickle.load(f)
     print('Directed dataset:', dataset, data)
@@ -88,32 +89,44 @@ def main():
     if args.df_size >= 100:     # df_size is number of nodes/edges to be deleted
         df_size = int(args.df_size)
     else:                       # df_size is the ratio
-        df_size = int(args.df_size / 100 * data.train_pos_edge_index.shape[1])
+        df_size = int(args.df_size / 100 * data.train_pos_edge_index.shape[1])  # default df_size=0.5
     print(f'Original size: {data.train_pos_edge_index.shape[1]:,}')
     print(f'Df size: {df_size:,}')
-
+    # Contains masks for all edges
     df_mask_all = torch.load(os.path.join(args.data_dir, args.dataset, f'df_{args.random_seed}.pt'))[args.df]
+    # df_24.pt => {'out': tensor([ True, False, False,  ..., False, False, False]), 'in': tensor([False,  True,  True,  ...,  True,  True,  True])}
     df_nonzero = df_mask_all.nonzero().squeeze()
+    # in => edges of 2-hop local subgraph of test dataset (formed using train dataset) positive edges
+    # out => edges other than 2-hop local subgraph of test dataset 
+    # df_nonzero (in) => tensor([    1,     2,     3,  ..., 57076, 57077, 57078]) Size => 41865
+    # df_nonzero (out) => tensor([    0,     7,    18,  ..., 57058, 57066, 57075]) Size => 15214
+    # Total (in + out) = 57079 => total edges of Cora
 
+    # Randomly generating permutation of indices of edges to be deletedssh
     idx = torch.randperm(df_nonzero.shape[0])[:df_size]
+    # Take index of edge to be deleted from df_nonzero for all index in idx list
     df_global_idx = df_nonzero[idx]
 
-    print('Deleting the following edges:', df_global_idx)
+    print('Deleting the following edges: ', df_global_idx)
+    print('Number of edges to be deleted: ', len(df_global_idx))
 
     # df_idx = [int(i) for i in args.df_idx.split(',')]
     # df_idx_global = df_mask.nonzero()[df_idx]
     
+    # dr set denotes complete training dataset
     dr_mask = torch.ones(data.train_pos_edge_index.shape[1], dtype=torch.bool)
+    # masking edges to be deleted as False
     dr_mask[df_global_idx] = False
-
+    
+    # df set also denotes complete training dataset
     df_mask = torch.zeros(data.train_pos_edge_index.shape[1], dtype=torch.bool)
+    # masking edges to be deleted as true
     df_mask[df_global_idx] = True
 
-    # For testing
+    # Storing edges that we are going to delte separately For testing purpose
     data.directed_df_edge_index = data.train_pos_edge_index[:, df_mask]
     if args.gnn in ['rgcn', 'rgat']:
         data.directed_df_edge_type = data.train_edge_type[df_mask]
-        
 
     # data.dr_mask = dr_mask
     # data.df_mask = df_mask
@@ -125,23 +138,30 @@ def main():
 
 
     # Edges in S_Df
+    # k_hop_subgraph returns the subgraph containing the nodes in nodes and the edges that connect these nodes to any other node within the given number of hops.
+    # Building 2 hop subgraph of the nodes from edges to be deleted
+    # Getting edges with mask True from df_mask and getting their nodes by flattening the 2D tensor
     _, two_hop_edge, _, two_hop_mask = k_hop_subgraph(
         data.train_pos_edge_index[:, df_mask].flatten().unique(), 
         2, 
         data.train_pos_edge_index,
         num_nodes=data.num_nodes)
-    data.sdf_mask = two_hop_mask
+    data.sdf_mask = two_hop_mask # masks for edges of k-hop-subgraph of edges to be deleted
 
     # Nodes in S_Df
+    # Building 1 hop subgraph of the nodes from edges to be deleted
     _, one_hop_edge, _, one_hop_mask = k_hop_subgraph(
         data.train_pos_edge_index[:, df_mask].flatten().unique(), 
         1, 
         data.train_pos_edge_index,
         num_nodes=data.num_nodes)
+    
     sdf_node_1hop = torch.zeros(data.num_nodes, dtype=torch.bool)
     sdf_node_2hop = torch.zeros(data.num_nodes, dtype=torch.bool)
 
+    # masks for nodes of 2-hop-subgraph of edges to be deleted
     sdf_node_1hop[one_hop_edge.flatten().unique()] = True
+    # masks for nodes of 1-hop-subgraph of edges to be deleted
     sdf_node_2hop[two_hop_edge.flatten().unique()] = True
 
     assert sdf_node_1hop.sum() == len(one_hop_edge.flatten().unique())
@@ -152,8 +172,9 @@ def main():
 
 
     # To undirected for message passing
-    # print(is_undir0.0175ected(data.train_pos_edge_index), data.train_pos_edge_index.shape, two_hop_mask.shape, df_mask.shape, two_hop_mask.shape)
+    # print(is_undirected(data.train_pos_edge_index), data.train_pos_edge_index.shape, two_hop_mask.shape, df_mask.shape, two_hop_mask.shape)
     assert not is_undirected(data.train_pos_edge_index)
+    # Cora is directed graph
 
     if args.gnn in ['rgcn', 'rgat']:
         r, c = data.train_pos_edge_index
@@ -172,9 +193,12 @@ def main():
         assert is_undirected(data.edge_index)
     
     else:
+        # converting to undirected graph while training simple GCNs
+        # converting the masks also to undirected graph masks
         train_pos_edge_index, [df_mask, two_hop_mask] = to_undirected(data.train_pos_edge_index, [df_mask.int(), two_hop_mask.int()])
         two_hop_mask = two_hop_mask.bool()
         df_mask = df_mask.bool()
+        # dr_mask: edges to keep
         dr_mask = ~df_mask
         
         data.train_pos_edge_index = train_pos_edge_index

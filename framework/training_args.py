@@ -52,7 +52,7 @@ def parse_args():
                         help='optimizer to use')
     parser.add_argument('--epochs', type=int, default=3000, 
                         help='number of epochs to train')
-    parser.add_argument('--valid_freq', type=int, default=100,
+    parser.add_argument('--valid_freq', type=int, default=10,
                         help='# of epochs to do validation')
     parser.add_argument('--checkpoint_dir', type=str, default='./checkpoint',
                         help='checkpoint folder')

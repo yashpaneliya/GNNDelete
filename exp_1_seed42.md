@@ -4,7 +4,7 @@ Random seed: 42
 
 Hyperpatameters:
 
-```
+```bash
 Data(
     x=[19793, 8710],
     y=[19793],
@@ -20,7 +20,7 @@ Model type:  gcn
 Epochs:  2000
 ```
 
-```
+```bash
 nohup python train_gnn.py --dataset Cora --gnn gcn --epochs 2000 --random_seed 42 > gcn_original_Cora_42.txt &
 ```
 

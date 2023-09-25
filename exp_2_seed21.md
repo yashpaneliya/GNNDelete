@@ -4,7 +4,7 @@ Random seed: 21
 
 Hyperpatameters:
 
-```
+```bash
 Data(
     x=[19793, 8710],
     y=[19793],
@@ -20,7 +20,7 @@ Model type:  gcn
 Epochs:  2000
 ```
 
-```
+```bash
 nohup python train_gnn.py --dataset Cora --gnn gcn --epochs 2000 --random_seed 21 > gcn_original_Cora_21.txt &
 ```
 
@@ -69,7 +69,7 @@ test Logs:
 }
 ```
 
-```
+```bash
 wandb: Run history:
 wandb:             Epoch ▁▁▁▂▂▂▂▂▂▃▃▃▃▃▄▄▄▄▄▄▅▅▅▅▅▅▆▆▆▆▆▇▇▇▇▇▇███
 wandb:             epoch ▁▁▁▁▂▂▂▂▂▃▃▃▃▃▃▄▄▄▄▄▅▅▅▅▅▅▆▆▆▆▆▇▇▇▇▇▇███
@@ -141,8 +141,6 @@ Reproduce:
 ```bash
 nohup python exp_delete_gnn.py --df_size 200 --df in --dataset Cora --gnn gcn --unlearning_model gnndelete --epochs 2000 --random_seed 21 > gcn_gnndelete_in_union200_Cora_21.txt &
 ```
-
-Deleting the following edges (index):
 
 Results:
 

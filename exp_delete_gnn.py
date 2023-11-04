@@ -203,8 +203,8 @@ def main():
     model = get_model(args, sdf_node_1hop, sdf_node_2hop, num_nodes=data.num_nodes, num_edge_type=args.num_edge_type)
     
     if args.unlearning_model != 'retrain' and args.seqlearn==True:
-        if os.path.exists(os.path.join(original_path, 'pred_proba.pt')):
-            logits_ori = torch.load(os.path.join(original_path, 'pred_proba.pt'))
+        if os.path.exists(os.path.join(args.checkpoint_dir, 'pred_proba.pt')):
+            logits_ori = torch.load(os.path.join(args.checkpoint_dir, 'pred_proba.pt'))
             if logits_ori is not None:
                 logits_ori = logits_ori.to(device)
         else:
@@ -296,7 +296,7 @@ def main():
     else:
         retrain = None
     
-    test_results = trainer.test(model, data, model_retrain=retrain, attack_model_all=attack_model_all, attack_model_sub=attack_model_sub)
+    test_results = trainer.test(model, data, model_retrain=retrain, attack_model_all=attack_model_all, attack_model_sub=attack_model_sub,df_index=df_global_idx)
     print(test_results[-1])
     trainer.save_log()
 

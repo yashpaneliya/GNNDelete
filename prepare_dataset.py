@@ -62,7 +62,7 @@ def train_test_split_edges_no_neg_adj_mask(data, val_ratio: float = 0.05, test_r
 
     else:
         perm = torch.randperm(row.size(0))
-
+    # randomly permuting the edges
     row = row[perm]
     col = col[perm]
 
@@ -88,6 +88,7 @@ def train_test_split_edges_no_neg_adj_mask(data, val_ratio: float = 0.05, test_r
         data.train_edge_type = train_edge_type
     
     else:
+        # creating 2D tensor for edge index of training
         data.train_pos_edge_index = torch.stack([r, c], dim=0)
         if edge_attr is not None:
             # out = to_undirected(data.train_pos_edge_index, edge_attr[n_v + n_t:])
@@ -109,6 +110,7 @@ def train_test_split_edges_no_neg_adj_mask(data, val_ratio: float = 0.05, test_r
             edge_index=data.test_pos_edge_index,
             edge_type=data.test_edge_type)
     else:
+        # generating negative edges for testset (from test set only)
         neg_edge_index = negative_sampling(
             edge_index=data.test_pos_edge_index,
             num_nodes=data.num_nodes,
@@ -157,19 +159,20 @@ def process_graph():
 
         # Get two hop degree for all nodes
         node_to_neighbors = {}
+        # graph.nodes() => NodeView((0, 1, 2, 3, 4, 5, 6...
         for n in tqdm(graph.nodes(), desc='Two hop neighbors'):
             neighbor_1 = set(graph.neighbors(n))
             neighbor_2 = sum([list(graph.neighbors(i)) for i in neighbor_1], [])
             # neighbour 2:  [10930, 10943, 611, 1009, 5045, 5379, 5537, 10386, 10918, 10943, 11631, 15631, 16322, 17130]
             neighbor_2 = set(neighbor_2)
-            neighbor = neighbor_1 | neighbor_2
+            neighbor = neighbor_1 | neighbor_2 # union of both sets
             # neighbour OR op:  {5537, 16322, 611, 5379, 10918, 17130, 11631, 15631, 1009, 10930, 10386, 5045, 10934, 10935, 10943}
             node_to_neighbors[n] = neighbor
 
         two_hop_degree = []
-        row, col = data.edge_index
+        row, col = data.edge_index # 126842 edges
         mask = row < col
-        row, col = row[mask], col[mask]
+        row, col = row[mask], col[mask] # 63421 edges
         for r, c in tqdm(zip(row, col), total=len(row)):
             neighbor_row = node_to_neighbors[r.item()]
             neighbor_col = node_to_neighbors[c.item()]

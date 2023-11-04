@@ -12,6 +12,7 @@ from torch_geometric.data import DataLoader
 from torch_geometric.utils import negative_sampling
 from torch_geometric.loader import GraphSAINTRandomWalkSampler
 from sklearn.metrics import roc_auc_score, average_precision_score, accuracy_score, f1_score
+from torch_geometric.utils import to_undirected, to_networkx, k_hop_subgraph, is_undirected
 
 from ..evaluation import *
 from ..training_args import parse_args
@@ -234,11 +235,11 @@ class Trainer:
         self.trainer_log['training_time'] = np.mean([i['epoch_time'] for i in self.trainer_log['log'] if 'epoch_time' in i])
 
     @torch.no_grad()
-    def eval(self, model, data, stage='val', pred_all=False):
+    def eval(self, model, data, stage='val', pred_all=False, df_index=None):
         model.eval()
         pos_edge_index = data[f'{stage}_pos_edge_index']
         neg_edge_index = data[f'{stage}_neg_edge_index']
-
+        print(type(pos_edge_index))
         if self.args.eval_on_cpu:
             model = model.to('cpu')
         
@@ -256,6 +257,205 @@ class Trainer:
         loss = F.binary_cross_entropy_with_logits(logits, label).cpu().item()
         dt_auc = roc_auc_score(label.cpu(), logits.cpu())
         dt_aup = average_precision_score(label.cpu(), logits.cpu())
+
+        if stage=='test':
+            print("TEST_POS_EDGE_INDEX: ", pos_edge_index)
+            print("Len POS: ", len(pos_edge_index))
+            print("Len NEG: ", len(neg_edge_index[0]))
+            print("DF_INDEX: ", df_index)
+            print("Len DF: ", len(df_index))
+            print("ORIGINAL EDGES: ", data.train_pos_edge_index[:, df_index])
+            # get deleted edge endpoints
+            del_nodes = data.train_pos_edge_index[:, df_index].flatten().unique()
+            # original_tensoi = torch.tensor([[1, 2, 3], [4, 5, 6]])
+            transposed_tensor_edge = pos_edge_index.T
+            transposed_neg_edge = neg_edge_index.T
+            
+            print("Del nodes:", del_nodes)
+            result = transposed_tensor_edge.tolist()
+            # print("Result edges:", result)
+            neg_res = transposed_neg_edge.tolist()
+
+            graph = nx.Graph()
+            graph.add_edges_from(result)
+
+            # get edges at distance 1
+            neigh_1_list = []
+            for node in del_nodes:
+                try:
+                    neigh_1 = set(graph.neighbors(node.item()))
+                    pairings = [[node, s] for s in neigh_1]
+                    neigh_1_list.extend(pairings)
+                except:
+                    continue
+
+            neigh_1_edge_tensor = torch.tensor(neigh_1_list).T
+            neg_edge_tensor_1 = torch.tensor(neg_res[:len(neigh_1_list)]).T
+            # 
+            # _, one_hop_edge, _, one_hop_mask = k_hop_subgraph(
+            #     data.train_pos_edge_index[:, df_index].flatten().unique(), 
+            #     1, 
+            #     pos_edge_index,
+            #     num_nodes=data.num_nodes)
+            # print("Len One hop edges: ", len(neigh_1_edge_tensor[0]))
+            # _, two_hop_edge, _, two_hop_mask = k_hop_subgraph(
+            #     pos_edge_index[df_index].flatten().unique(), 
+            #     2, 
+            #     data.pos_edge_index,
+            #     num_nodes=data.num_nodes)
+            # neigh1_len = len(neight_1_list)
+            one_hop_logits = model.decode(z, neigh_1_edge_tensor, neg_edge_tensor_1).sigmoid()
+            one_hop_label = self.get_link_labels(neigh_1_edge_tensor, neg_edge_tensor_1)
+            one_hop_loss = F.binary_cross_entropy_with_logits(one_hop_logits, one_hop_label).cpu().item()
+            one_hop_dt_auc = roc_auc_score(one_hop_label.cpu(), one_hop_logits.cpu())
+            one_hop_dt_aup = average_precision_score(one_hop_label.cpu(), one_hop_logits.cpu())
+
+            print("Number of 1-hop edges: ", len(neigh_1_edge_tensor[0]))
+            print("Number of Negative edges: ", len(neg_edge_tensor_1[0]))
+            print("One Hop distance edges Loss, AUC, AUP:")
+            print("Loss: ", one_hop_loss)
+            print("AUC: ", one_hop_dt_auc)
+            print("AUP: ", one_hop_dt_aup)
+
+
+            # get edges at distance 2
+            neigh_2_list = []
+            for node in del_nodes:
+                try:
+                    neigh_1 = set(graph.neighbors(node.item()))
+                    for n1 in neigh_1:
+                        neigh_2 = set(graph.neighbors(n1))
+                        pairings = [[n1, s] for s in neigh_2]
+                        neigh_2_list.extend(pairings)
+                except:
+                    continue
+            
+
+            neigh_2_edge_tensor = torch.tensor(neigh_2_list).T
+            neg_edge_tensor_2 = torch.tensor(neg_res[:len(neigh_2_list)]).T
+
+            two_hop_logits = model.decode(z, neigh_2_edge_tensor, neg_edge_tensor_2).sigmoid()
+            two_hop_label = self.get_link_labels(neigh_2_edge_tensor, neg_edge_tensor_2)
+            two_hop_loss = F.binary_cross_entropy_with_logits(two_hop_logits, two_hop_label).cpu().item()
+            two_hop_dt_auc = roc_auc_score(two_hop_label.cpu(), two_hop_logits.cpu())
+            two_hop_dt_aup = average_precision_score(two_hop_label.cpu(), two_hop_logits.cpu())
+
+            print("Number of 2-hop edges: ", len(neigh_2_edge_tensor[0]))
+            print("Number of Negative edges: ", len(neg_edge_tensor_2[0]))
+            print("Two Hop distance edges Loss, AUC, AUP:")
+            print("Loss: ", two_hop_loss)
+            print("AUC: ", two_hop_dt_auc)
+            print("AUP: ", two_hop_dt_aup)
+            # _, two_hop_edge, _, two_hop_mask = k_hop_subgraph(data.train_pos_edge_index[:, df_index].flatten().unique(), 2, pos_edge_index, num_nodes=data.num_nodes)
+
+            # print("Len of 2-hop edges: ", len(two_hop_edge))
+            # two_hop_logits = model.decode(z, two_hop_edge, neg_edge_index).sigmoid()
+            # two_hop_label = self.get_link_labels(two_hop_edge, neg_edge_index)
+            # two_hop_loss = F.binary_cross_entropy_with_logits(two_hop_logits, two_hop_label).cpu().item()
+            # two_hop_dt_auc = roc_auc_score(two_hop_label.cpu(), two_hop_logits.cpu())
+            # two_hop_dt_aup = average_precision_score(two_hop_label.cpu(), two_hop_logits.cpu())
+           
+            # print("Number of 2-hop edges: ", len(two_hop_edge[0]))
+            # print("Two Hop distance edges Loss, AUC, AUP:")
+            # print("Loss: ", two_hop_loss)
+            # print("AUC: ", two_hop_dt_auc)
+            # print("AUP: ", two_hop_dt_aup)
+
+            # get edges at distance 3
+            neigh_3_list = []
+            for node in del_nodes:
+                try:
+                    neigh_1 = set(graph.neighbors(node.item()))
+                    for n1 in neigh_1:
+                        neigh_2 = set(graph.neighbors(n1))
+                        for n2 in neigh_2:
+                            neigh_3 = set(graph.neighbors(n2))
+                            pairings = [[n2, s] for s in neigh_3 if s not in neigh_1]
+                            neigh_3_list.extend(pairings)
+                except:
+                    continue
+            
+
+            neigh_3_edge_tensor = torch.tensor(neigh_3_list).T
+            neg_edge_tensor_3 = torch.tensor(neg_res[:len(neigh_3_list)]).T
+
+            three_hop_logits = model.decode(z, neigh_3_edge_tensor, neg_edge_tensor_3).sigmoid()
+            three_hop_label = self.get_link_labels(neigh_3_edge_tensor, neg_edge_tensor_3)
+            three_hop_loss = F.binary_cross_entropy_with_logits(three_hop_logits, three_hop_label).cpu().item()
+            three_hop_dt_auc = roc_auc_score(three_hop_label.cpu(), three_hop_logits.cpu())
+            three_hop_dt_aup = average_precision_score(three_hop_label.cpu(), three_hop_logits.cpu())
+
+            print("Number of 3-hop edges: ", len(neigh_3_edge_tensor[0]))
+            print("Number of Negative edges: ", len(neg_edge_tensor_3[0]))
+            print("Two Hop distance edges Loss, AUC, AUP:")
+            print("Loss: ", three_hop_loss)
+            print("AUC: ", three_hop_dt_auc)
+            print("AUP: ", three_hop_dt_aup)
+
+            # _, thr_hop_edge, _, thr_hop_mask = k_hop_subgraph(pos_edge_index[:, df_index].flatten().unique(), 3, pos_edge_index, num_nodes=data.num_nodes)
+
+            # print("Len of 3-hop edges: ", len(thr_hop_edge))
+            # thr_hop_logits = model.decode(z, thr_hop_edge, neg_edge_index).sigmoid()
+            # thr_hop_label = self.get_link_labels(thr_hop_edge, neg_edge_index)
+            # thr_hop_loss = F.binary_cross_entropy_with_logits(thr_hop_logits, thr_hop_label).cpu().item()
+            # thr_hop_dt_auc = roc_auc_score(thr_hop_label.cpu(), thr_hop_logits.cpu())
+            # thr_hop_dt_aup = average_precision_score(thr_hop_label.cpu(), thr_hop_logits.cpu())
+
+            # print("Number of 3-hop edges: ", len(thr_hop_edge[0]))
+            # print("Three Hop distance edges Loss, AUC, AUP:")
+            # print("Loss: ", thr_hop_loss)
+            # print("AUC: ", thr_hop_dt_auc)
+            # print("AUP: ", thr_hop_dt_aup)
+            
+            # get edges at distance 4
+            neigh_4_list = []
+            for node in del_nodes:
+                try:
+                    neigh_1 = set(graph.neighbors(node.item()))
+                    for n1 in neigh_1:
+                        neigh_2 = set(graph.neighbors(n1))
+                        for n2 in neigh_2:
+                            neigh_3 = set(graph.neighbors(n2))
+                            for n3 in neigh_3:
+                                if n3 not in neigh_1:
+                                    neigh_4 = set(graph.neighbors(n3))
+                                    pairings = [[n3, s] for s in neigh_4]
+                                    neigh_4_list.extend(pairings)
+                except:
+                    continue
+            
+
+            neigh_4_edge_tensor = torch.tensor(neigh_4_list).T
+            neg_edge_tensor_4 = torch.tensor(neg_res[:len(neigh_4_list)]).T
+
+            four_hop_logits = model.decode(z, neigh_4_edge_tensor, neg_edge_tensor_4).sigmoid()
+            four_hop_label = self.get_link_labels(neigh_4_edge_tensor, neg_edge_tensor_4)
+            four_hop_loss = F.binary_cross_entropy_with_logits(four_hop_logits, four_hop_label).cpu().item()
+            four_hop_dt_auc = roc_auc_score(four_hop_label.cpu(), four_hop_logits.cpu())
+            four_hop_dt_aup = average_precision_score(four_hop_label.cpu(), four_hop_logits.cpu())
+
+            print("Number of 4-hop edges: ", len(neigh_4_edge_tensor[0]))
+            print("Number of Negative edges: ", len(neg_edge_tensor_4[0]))
+            print("Two Hop distance edges Loss, AUC, AUP:")
+            print("Loss: ", four_hop_loss)
+            print("AUC: ", four_hop_dt_auc)
+            print("AUP: ", four_hop_dt_aup)
+
+
+            # _, fr_hop_edge, _, fr_hop_mask = k_hop_subgraph(pos_edge_index[:, df_index].flatten().unique(), 4, pos_edge_index, num_nodes=data.num_nodes)
+
+            # print("Len of 4-hop edges: ", len(fr_hop_edge))
+            # fr_hop_logits = model.decode(z, fr_hop_edge, neg_edge_index).sigmoid()
+            # fr_hop_label = self.get_link_labels(fr_hop_edge, neg_edge_index)
+            # fr_hop_loss = F.binary_cross_entropy_with_logits(fr_hop_logits, fr_hop_label).cpu().item()
+            # fr_hop_dt_auc = roc_auc_score(fr_hop_label.cpu(), fr_hop_logits.cpu())
+            # fr_hop_dt_aup = average_precision_score(fr_hop_label.cpu(), fr_hop_logits.cpu())
+
+            # print("Number of 4-hop edges: ", len(fr_hop_edge[0]))
+            # print("Two Hop distance edges Loss, AUC, AUP:")
+            # print("Loss: ", fr_hop_loss)
+            # print("AUC: ", fr_hop_dt_auc)
+            # print("AUP: ", fr_hop_dt_aup)
 
         # DF AUC AUP
         if self.args.unlearning_model in ['original']:
@@ -314,7 +514,7 @@ class Trainer:
         return loss, dt_auc, dt_aup, df_auc, df_aup, df_logit, logit_all_pair, log
 
     @torch.no_grad()
-    def test(self, model, data, model_retrain=None, attack_model_all=None, attack_model_sub=None, ckpt='best'):
+    def test(self, model, data, model_retrain=None, attack_model_all=None, attack_model_sub=None, ckpt='best', df_index=None):
         
         if ckpt == 'best':    # Load best ckpt
             ckpt = torch.load(os.path.join(self.args.checkpoint_dir, 'model_best.pt'))
@@ -324,7 +524,7 @@ class Trainer:
             pred_all = False
         else:
             pred_all = True
-        loss, dt_auc, dt_aup, df_auc, df_aup, df_logit, logit_all_pair, test_log = self.eval(model, data, 'test', pred_all)
+        loss, dt_auc, dt_aup, df_auc, df_aup, df_logit, logit_all_pair, test_log = self.eval(model, data, 'test', pred_all, df_index)
 
         self.trainer_log['dt_loss'] = loss
         self.trainer_log['dt_auc'] = dt_auc

@@ -2,8 +2,10 @@ import os
 import time
 import json
 import wandb
+import random
 import numpy as np
 import torch
+import pandas as pd
 import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import trange, tqdm
@@ -11,16 +13,18 @@ from ogb.graphproppred import Evaluator
 from torch_geometric.data import DataLoader
 from torch_geometric.utils import negative_sampling
 from torch_geometric.loader import GraphSAINTRandomWalkSampler
-from sklearn.metrics import roc_auc_score, average_precision_score, accuracy_score, f1_score
+from sklearn.metrics import roc_auc_score, average_precision_score, accuracy_score, f1_score, confusion_matrix, precision_score
 from torch_geometric.utils import to_undirected, to_networkx, k_hop_subgraph, is_undirected
 
+from ..models.gcn import GCN
+from collections import defaultdict 
 from ..evaluation import *
 from ..training_args import parse_args
 from ..utils import *
 
-
 device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 # device = 'cpu'
+model_mapping = {'gcn': GCN}
 
 class Trainer:
     def __init__(self, args):
@@ -234,8 +238,107 @@ class Trainer:
         self.trainer_log['best_valid_loss'] = best_valid_loss
         self.trainer_log['training_time'] = np.mean([i['epoch_time'] for i in self.trainer_log['log'] if 'epoch_time' in i])
 
+    # Helper function to generate confusion matrix for original model and new model
+    # Purpose: For distance based prediction analysis
     @torch.no_grad()
-    def eval(self, model, data, stage='val', pred_all=False, df_index=None):
+    def org_new_analysis(self, org_model, new_model, pos_edge_list, org_z, new_z, test_neg_edge_index, csv_name, distance):
+        print("----------------------------------------------------------------------------------")
+        print("Total test edges (pos + neg): ", len(pos_edge_list)*2)
+
+        pos_edge_index = torch.tensor(pos_edge_list).T
+
+        random_indices = torch.randperm(pos_edge_index.shape[1])[:len(pos_edge_list)]
+        neg_edge_index = test_neg_edge_index[:, random_indices]
+
+        org_logits = org_model.decode(org_z, pos_edge_index, neg_edge_index).sigmoid()
+        org_labels = torch.round(org_logits).int()
+
+        logits = new_model.decode(new_z, pos_edge_index, neg_edge_index).sigmoid()
+        labels = torch.round(logits).int()
+
+        true_labels = self.get_link_labels(pos_edge_index, neg_edge_index).cpu().numpy()
+        
+        # Count differing labels
+        org_labels_np = org_labels.cpu().numpy()
+        labels_np = labels.cpu().numpy()
+
+        df = pd.DataFrame(columns =  ['distance', 'true', 'original', 'new'])
+        df['distance'] = [distance for i in range(len(pos_edge_list*2))]
+        df['true'] = true_labels
+        df['original'] = org_labels_np
+        df['new'] = labels_np
+
+        df.to_csv(csv_name, mode='a', index=False, header=False)
+        
+        print("Correct predictions of Original Model: ", sum(org_labels_np==true_labels))
+        print("Correct predictions of New Model: ", sum(labels_np==true_labels))
+
+        print("Mismatch from Original Model with true labels: ", sum(org_labels_np != true_labels))
+        print("Mismatch from New Model with true labels: ", sum(labels_np != true_labels))
+
+        print("Mismatch from Original Model with New Model: ", sum(org_labels_np != labels_np))
+
+        diff_indices = np.where(org_labels_np != labels_np)[0]
+        print("Number of edges which got corrected in New Model: ", np.sum(labels_np[diff_indices] == true_labels[diff_indices]))
+
+        new_0_indices = np.where(labels_np == 0)[0]
+        new_1_indices = np.where(labels_np == 1)[0]
+
+        org_0_indices = np.where(org_labels_np == 0)[0]
+        org_1_indices = np.where(org_labels_np == 1)[0]
+
+        true_0_indices = np.where(true_labels == 0)[0]
+        true_1_indices = np.where(true_labels == 1)[0]
+
+        conf_mat_org = [[len(set(true_0_indices).intersection(org_0_indices)), len(set(true_1_indices).intersection(org_0_indices))] , [len(set(true_0_indices).intersection(org_1_indices)), len(set(true_1_indices).intersection(org_1_indices))]]
+        print("Confusion Matrix Original Model:")
+        print(conf_mat_org)
+
+        conf_mat_new = [[len(set(true_0_indices).intersection(new_0_indices)), len(set(true_1_indices).intersection(new_0_indices))] , [len(set(true_0_indices).intersection(new_1_indices)), len(set(true_1_indices).intersection(new_1_indices))]]
+        print("Confusion Matrix New Model:")
+        print(conf_mat_new)
+        
+        conf_mat_org_new = [[len(set(new_0_indices).intersection(org_0_indices)), len(set(new_0_indices).intersection(org_1_indices))] , [len(set(new_1_indices).intersection(org_0_indices)), len(set(new_1_indices).intersection(org_1_indices))]]
+        print("Confusion Matrix between Original Model and New Model:")
+        print(conf_mat_org_new)
+
+    # Helper function for distance based performance analysis
+    @torch.no_grad()
+    def dist_eval(self, model, distance, pos_edge_list, z, test_neg_edge_index):
+        print("----------------------------------------------------------------------------------")
+        print("----------------------------------------------------------------------------------")
+        print("Testing for edges at distance: ", distance)
+        pos_edge_index = torch.tensor(pos_edge_list).T
+        # neg_edge_index = generate_negative_edges_from_edges(pos_edge_index, len(pos_edge_list))
+
+        random_indices = torch.randperm(pos_edge_index.shape[1])[:len(pos_edge_list)]
+        neg_edge_index = test_neg_edge_index[:, random_indices]
+        logits = model.decode(z, pos_edge_index, neg_edge_index).sigmoid()
+        labels = self.get_link_labels(pos_edge_index, neg_edge_index)
+        print("Logits len:",len(logits))
+        # print(logits)
+        print("Lables len:",len(labels))
+        # print(one_pos_labels)
+        pred_labels = torch.round(logits).int()
+        # print(pred_labels)
+
+        loss = F.binary_cross_entropy_with_logits(logits, labels, reduction='none')
+        print("LOSS: ", loss.size())
+        dt_auc = roc_auc_score(labels.cpu(), logits.cpu())
+        print("AUC: ", dt_auc)
+        dt_aup = average_precision_score(labels.cpu(), logits.cpu())
+        print("AUP: ", dt_aup)
+
+        cm = confusion_matrix(labels.numpy(), pred_labels.numpy())
+        print("Confusion matrix: ")
+        print(cm)
+        acc = accuracy_score(labels.numpy(), pred_labels.numpy())
+        print("Accuracy: ", acc)
+        precision = precision_score(labels.numpy(), pred_labels.numpy())
+        print("Precision: ", precision)
+
+    @torch.no_grad()
+    def eval(self, model, data, stage='val', pred_all=False, df_index=None, args=None):
         model.eval()
         pos_edge_index = data[f'{stage}_pos_edge_index']
         neg_edge_index = data[f'{stage}_neg_edge_index']
@@ -258,204 +361,268 @@ class Trainer:
         dt_auc = roc_auc_score(label.cpu(), logits.cpu())
         dt_aup = average_precision_score(label.cpu(), logits.cpu())
 
-        if stage=='test':
-            print("TEST_POS_EDGE_INDEX: ", pos_edge_index)
-            print("Len POS: ", len(pos_edge_index))
-            print("Len NEG: ", len(neg_edge_index[0]))
-            print("DF_INDEX: ", df_index)
-            print("Len DF: ", len(df_index))
-            print("ORIGINAL EDGES: ", data.train_pos_edge_index[:, df_index])
+        print("For Complete Test set:")
+        cm = confusion_matrix(label.numpy(), torch.round(logits).int().numpy())
+        print("Confusion matrix: ")
+        print(cm)
+        acc = accuracy_score(label.numpy(), torch.round(logits).int().numpy())
+        print("Accuracy: ", acc)
+        precision = precision_score(label.numpy(), torch.round(logits).int().numpy())
+        print("Precision: ", precision)
+
+        print("--------------------------------------------------------------------")
+        if stage=='test' and df_index is not None:
+            # print("TEST_POS_EDGE_INDEX: ", pos_edge_index)
+            print("Len Test POS: ", len(pos_edge_index[0]))
+            print("Len Test NEG: ", len(neg_edge_index[0]))
+            # print("DF_INDEX: ", df_index)
+            print("Len DF set: ", len(df_index))
+            # print("ORIGINAL EDGES: ", data.train_pos_edge_index[:, df_index])
+            del_edges = data.train_pos_edge_index[:, df_index]
+            # print("DEL EDGES: ", del_edges)
             # get deleted edge endpoints
-            del_nodes = data.train_pos_edge_index[:, df_index].flatten().unique()
-            # original_tensoi = torch.tensor([[1, 2, 3], [4, 5, 6]])
-            transposed_tensor_edge = pos_edge_index.T
-            transposed_neg_edge = neg_edge_index.T
+            # del_nodes = data.train_pos_edge_index[:, df_index].flatten().unique()
+            # original_tensor = torch.tensor([[1, 2, 3], [4, 5, 6]])
             
-            print("Del nodes:", del_nodes)
-            result = transposed_tensor_edge.tolist()
+            # print("Del nodes:", del_nodes)
+            result = pos_edge_index.T.tolist()
             # print("Result edges:", result)
-            neg_res = transposed_neg_edge.tolist()
-
+            neg_res = neg_edge_index.T.tolist()
+            print('Train pos edge size: ', data.train_pos_edge_index.shape[1])
             graph = nx.Graph()
+            # adding test set edges to graph
             graph.add_edges_from(result)
+            # adding train set edges to graph to form complete original graph
+            graph.add_edges_from(data.train_pos_edge_index.T.tolist())
+            # adding val set edges to graph to form complete original graph
+            graph.add_edges_from(data.val_pos_edge_index.T.tolist())
 
-            # get edges at distance 1
-            neigh_1_list = []
-            for node in del_nodes:
-                try:
-                    neigh_1 = set(graph.neighbors(node.item()))
-                    pairings = [[node, s] for s in neigh_1]
-                    neigh_1_list.extend(pairings)
-                except:
-                    continue
+            graph = graph.to_undirected()
 
-            neigh_1_edge_tensor = torch.tensor(neigh_1_list).T
-            neg_edge_tensor_1 = torch.tensor(neg_res[:len(neigh_1_list)]).T
-            # 
-            # _, one_hop_edge, _, one_hop_mask = k_hop_subgraph(
-            #     data.train_pos_edge_index[:, df_index].flatten().unique(), 
-            #     1, 
-            #     pos_edge_index,
-            #     num_nodes=data.num_nodes)
-            # print("Len One hop edges: ", len(neigh_1_edge_tensor[0]))
-            # _, two_hop_edge, _, two_hop_mask = k_hop_subgraph(
-            #     pos_edge_index[df_index].flatten().unique(), 
-            #     2, 
-            #     data.pos_edge_index,
-            #     num_nodes=data.num_nodes)
-            # neigh1_len = len(neight_1_list)
-            one_hop_logits = model.decode(z, neigh_1_edge_tensor, neg_edge_tensor_1).sigmoid()
-            one_hop_label = self.get_link_labels(neigh_1_edge_tensor, neg_edge_tensor_1)
-            one_hop_loss = F.binary_cross_entropy_with_logits(one_hop_logits, one_hop_label).cpu().item()
-            one_hop_dt_auc = roc_auc_score(one_hop_label.cpu(), one_hop_logits.cpu())
-            one_hop_dt_aup = average_precision_score(one_hop_label.cpu(), one_hop_logits.cpu())
+            # computing all pairs shortest path
+            dist_dict = defaultdict(int)
 
-            print("Number of 1-hop edges: ", len(neigh_1_edge_tensor[0]))
-            print("Number of Negative edges: ", len(neg_edge_tensor_1[0]))
-            print("One Hop distance edges Loss, AUC, AUP:")
-            print("Loss: ", one_hop_loss)
-            print("AUC: ", one_hop_dt_auc)
-            print("AUP: ", one_hop_dt_aup)
+            dist_mat = dict(nx.all_pairs_shortest_path_length(graph))
+            onec = 0
+            twoc = 0
+            threec = 0
+            fourmore = 0
+
+            onel = []
+            twol = []
+            threel = []
+            fourl = []
+            # print(dist_mat)
+            # avg_one = []
+            # avg_two = []
+            # avg_three = []
+            # avg_four = []
+            for i in range(pos_edge_index.size(1)):
+                u = pos_edge_index[0][i].item()
+                v = pos_edge_index[1][i].item()
+                # print("u: ->",u," v:",v, end=' ')
+                min_d = float('inf')
+                # sum_d = 0
+                # count = 0
+                for j in range(del_edges.size(1)):
+                    x = del_edges[0][j].item()
+                    y = del_edges[1][j].item()
+                    # print("x: ",x," y:",y, end=' ')
+                    try:
+                        d = min((dist_mat[u][x], dist_mat[u][y], dist_mat[v][x], dist_mat[v][y]))
+                        # print(d)
+                        min_d = min(min_d, d)
+                        # sum_d += min_d
+                        # count += 1
+                    except:
+                        pass
+                # print("Min d: ",min_d)
+                # dist_dict[min_d] += 1
+                # if count > 0:
+                #     avg_d = sum_d / count
+                # else:
+                #     avg_d = min_d
+                # # print("Avg D: ", avg_d)
+                # if avg_d <=1.0:
+                #     avg_one.append([u,v])
+                # elif avg_d<=2.0:
+                #     avg_two.append([u,v])
+                # elif avg_d<=3.0:
+                #     avg_three.append([u,v])
+                # else:
+                #     avg_four.append([u,v])
+
+                if min_d <= 1:
+                    # onec+=1
+                    onel.append([u,v])
+                elif min_d <=2:
+                    # twoc+=1
+                    twol.append([u,v])
+                elif min_d <=3:
+                    threel.append([u,v])
+                    # threec+=1
+                else:
+                    fourl.append([u,v])
+                    # fourmore+=1
+
+            # print("==============Separation based on Min distance==============")
+            # self.dist_eval(model, 1, onel, z, neg_edge_index)
+            # self.dist_eval(model, 2, twol, z, neg_edge_index)
+            # self.dist_eval(model, 3, threel, z, neg_edge_index)
+            # self.dist_eval(model, '>=4', fourl, z, neg_edge_index)
+
+            # print("==============Separation based on Avg distance==============")
+            # self.dist_eval(model, 1, avg_one, z, neg_edge_index)
+            # self.dist_eval(model, 2, avg_two, z, neg_edge_index)
+            # self.dist_eval(model, 3, avg_three, z, neg_edge_index)
+            # self.dist_eval(model, '>=4', avg_four, z, neg_edge_index)
+
+            # Load original model
+            org_model_path = os.path.join('/home/yashpaneliya/mtp/checkpoint', args.dataset, args.gnn, 'original', str(args.random_seed), 'model_best.pt')
+            org_model_ckpt = torch.load(org_model_path)
+            args.exp_test = True
+            org_model = model_mapping[args.gnn](args)
+            org_model.load_state_dict(org_model_ckpt['model_state'], strict=False)
+            org_z = org_model(data.x, data.train_pos_edge_index)
+
+            csv_name = f'{args.dataset}_{args.df}_{args.df_size}_{args.random_seed}.csv'
+
+            # with open(csv_name, 'w') as f:
+            #     print('${csv_name} Created.')
+            
+            df = pd.DataFrame(columns = ['distance', 'true', 'original', 'new'])
+            df.to_csv(csv_name)
+
+            print("================== Distance <=1 ==================")
+            self.org_new_analysis(org_model, model, onel, org_z, z, neg_edge_index, csv_name, '<=1')
+            print("================== Distance >1 & <=2 ==================")
+            self.org_new_analysis(org_model, model, twol, org_z, z, neg_edge_index, csv_name, '<=2')
+            print("================== Distance >2 & <=3 ==================")
+            self.org_new_analysis(org_model, model, threel, org_z, z, neg_edge_index, csv_name, '<=3')
+            print("================== Distance >3 ==================")
+            self.org_new_analysis(org_model, model, fourl, org_z, z, neg_edge_index, csv_name, '>3')
+            args.exp_test = None
+
+            # # get edges at distance 1
+            # neigh_1_list = []
+            # for node in del_nodes:
+            #     try:
+            #         neigh_1 = set(graph.neighbors(node.item()))
+            #         pairings = [[node, s] for s in neigh_1]
+            #         neigh_1_list.extend(pairings)
+            #     except:
+            #         continue
+
+            # neigh_1_edge_tensor = torch.tensor(neigh_1_list).T
+            # neg_edge_tensor_1 = torch.tensor(neg_res[:len(neigh_1_list)]).T
+
+            # one_hop_logits = model.decode(z, neigh_1_edge_tensor, neg_edge_tensor_1).sigmoid()
+            # one_hop_label = self.get_link_labels(neigh_1_edge_tensor, neg_edge_tensor_1)
+            # one_hop_loss = F.binary_cross_entropy_with_logits(one_hop_logits, one_hop_label).cpu().item()
+            # one_hop_dt_auc = roc_auc_score(one_hop_label.cpu(), one_hop_logits.cpu())
+            # one_hop_dt_aup = average_precision_score(one_hop_label.cpu(), one_hop_logits.cpu())
+
+            # print("Number of 1-hop edges: ", len(neigh_1_edge_tensor[0]))
+            # print("Number of Negative edges: ", len(neg_edge_tensor_1[0]))
+            # print("One Hop distance edges Loss, AUC, AUP:")
+            # print("Loss: ", one_hop_loss)
+            # print("AUC: ", one_hop_dt_auc)
+            # print("AUP: ", one_hop_dt_aup)
 
 
-            # get edges at distance 2
-            neigh_2_list = []
-            for node in del_nodes:
-                try:
-                    neigh_1 = set(graph.neighbors(node.item()))
-                    for n1 in neigh_1:
-                        neigh_2 = set(graph.neighbors(n1))
-                        pairings = [[n1, s] for s in neigh_2]
-                        neigh_2_list.extend(pairings)
-                except:
-                    continue
+            # # get edges at distance 2
+            # neigh_2_list = []
+            # for node in del_nodes:
+            #     try:
+            #         neigh_1 = set(graph.neighbors(node.item()))
+            #         for n1 in neigh_1:
+            #             neigh_2 = set(graph.neighbors(n1))
+            #             pairings = [[n1, s] for s in neigh_2]
+            #             neigh_2_list.extend(pairings)
+            #     except:
+            #         continue
             
 
-            neigh_2_edge_tensor = torch.tensor(neigh_2_list).T
-            neg_edge_tensor_2 = torch.tensor(neg_res[:len(neigh_2_list)]).T
+            # neigh_2_edge_tensor = torch.tensor(neigh_2_list).T
+            # neg_edge_tensor_2 = torch.tensor(neg_res[:len(neigh_2_list)]).T
 
-            two_hop_logits = model.decode(z, neigh_2_edge_tensor, neg_edge_tensor_2).sigmoid()
-            two_hop_label = self.get_link_labels(neigh_2_edge_tensor, neg_edge_tensor_2)
-            two_hop_loss = F.binary_cross_entropy_with_logits(two_hop_logits, two_hop_label).cpu().item()
-            two_hop_dt_auc = roc_auc_score(two_hop_label.cpu(), two_hop_logits.cpu())
-            two_hop_dt_aup = average_precision_score(two_hop_label.cpu(), two_hop_logits.cpu())
-
-            print("Number of 2-hop edges: ", len(neigh_2_edge_tensor[0]))
-            print("Number of Negative edges: ", len(neg_edge_tensor_2[0]))
-            print("Two Hop distance edges Loss, AUC, AUP:")
-            print("Loss: ", two_hop_loss)
-            print("AUC: ", two_hop_dt_auc)
-            print("AUP: ", two_hop_dt_aup)
-            # _, two_hop_edge, _, two_hop_mask = k_hop_subgraph(data.train_pos_edge_index[:, df_index].flatten().unique(), 2, pos_edge_index, num_nodes=data.num_nodes)
-
-            # print("Len of 2-hop edges: ", len(two_hop_edge))
-            # two_hop_logits = model.decode(z, two_hop_edge, neg_edge_index).sigmoid()
-            # two_hop_label = self.get_link_labels(two_hop_edge, neg_edge_index)
+            # two_hop_logits = model.decode(z, neigh_2_edge_tensor, neg_edge_tensor_2).sigmoid()
+            # two_hop_label = self.get_link_labels(neigh_2_edge_tensor, neg_edge_tensor_2)
             # two_hop_loss = F.binary_cross_entropy_with_logits(two_hop_logits, two_hop_label).cpu().item()
             # two_hop_dt_auc = roc_auc_score(two_hop_label.cpu(), two_hop_logits.cpu())
             # two_hop_dt_aup = average_precision_score(two_hop_label.cpu(), two_hop_logits.cpu())
-           
-            # print("Number of 2-hop edges: ", len(two_hop_edge[0]))
+
+            # print("Number of 2-hop edges: ", len(neigh_2_edge_tensor[0]))
+            # print("Number of Negative edges: ", len(neg_edge_tensor_2[0]))
             # print("Two Hop distance edges Loss, AUC, AUP:")
             # print("Loss: ", two_hop_loss)
             # print("AUC: ", two_hop_dt_auc)
             # print("AUP: ", two_hop_dt_aup)
 
-            # get edges at distance 3
-            neigh_3_list = []
-            for node in del_nodes:
-                try:
-                    neigh_1 = set(graph.neighbors(node.item()))
-                    for n1 in neigh_1:
-                        neigh_2 = set(graph.neighbors(n1))
-                        for n2 in neigh_2:
-                            neigh_3 = set(graph.neighbors(n2))
-                            pairings = [[n2, s] for s in neigh_3 if s not in neigh_1]
-                            neigh_3_list.extend(pairings)
-                except:
-                    continue
+            # # get edges at distance 3
+            # neigh_3_list = []
+            # for node in del_nodes:
+            #     try:
+            #         neigh_1 = set(graph.neighbors(node.item()))
+            #         for n1 in neigh_1:
+            #             neigh_2 = set(graph.neighbors(n1))
+            #             for n2 in neigh_2:
+            #                 neigh_3 = set(graph.neighbors(n2))
+            #                 pairings = [[n2, s] for s in neigh_3 if s not in neigh_1]
+            #                 neigh_3_list.extend(pairings)
+            #     except:
+            #         continue
             
 
-            neigh_3_edge_tensor = torch.tensor(neigh_3_list).T
-            neg_edge_tensor_3 = torch.tensor(neg_res[:len(neigh_3_list)]).T
+            # neigh_3_edge_tensor = torch.tensor(neigh_3_list).T
+            # neg_edge_tensor_3 = torch.tensor(neg_res[:len(neigh_3_list)]).T
 
-            three_hop_logits = model.decode(z, neigh_3_edge_tensor, neg_edge_tensor_3).sigmoid()
-            three_hop_label = self.get_link_labels(neigh_3_edge_tensor, neg_edge_tensor_3)
-            three_hop_loss = F.binary_cross_entropy_with_logits(three_hop_logits, three_hop_label).cpu().item()
-            three_hop_dt_auc = roc_auc_score(three_hop_label.cpu(), three_hop_logits.cpu())
-            three_hop_dt_aup = average_precision_score(three_hop_label.cpu(), three_hop_logits.cpu())
+            # three_hop_logits = model.decode(z, neigh_3_edge_tensor, neg_edge_tensor_3).sigmoid()
+            # three_hop_label = self.get_link_labels(neigh_3_edge_tensor, neg_edge_tensor_3)
+            # three_hop_loss = F.binary_cross_entropy_with_logits(three_hop_logits, three_hop_label).cpu().item()
+            # three_hop_dt_auc = roc_auc_score(three_hop_label.cpu(), three_hop_logits.cpu())
+            # three_hop_dt_aup = average_precision_score(three_hop_label.cpu(), three_hop_logits.cpu())
 
-            print("Number of 3-hop edges: ", len(neigh_3_edge_tensor[0]))
-            print("Number of Negative edges: ", len(neg_edge_tensor_3[0]))
-            print("Two Hop distance edges Loss, AUC, AUP:")
-            print("Loss: ", three_hop_loss)
-            print("AUC: ", three_hop_dt_auc)
-            print("AUP: ", three_hop_dt_aup)
-
-            # _, thr_hop_edge, _, thr_hop_mask = k_hop_subgraph(pos_edge_index[:, df_index].flatten().unique(), 3, pos_edge_index, num_nodes=data.num_nodes)
-
-            # print("Len of 3-hop edges: ", len(thr_hop_edge))
-            # thr_hop_logits = model.decode(z, thr_hop_edge, neg_edge_index).sigmoid()
-            # thr_hop_label = self.get_link_labels(thr_hop_edge, neg_edge_index)
-            # thr_hop_loss = F.binary_cross_entropy_with_logits(thr_hop_logits, thr_hop_label).cpu().item()
-            # thr_hop_dt_auc = roc_auc_score(thr_hop_label.cpu(), thr_hop_logits.cpu())
-            # thr_hop_dt_aup = average_precision_score(thr_hop_label.cpu(), thr_hop_logits.cpu())
-
-            # print("Number of 3-hop edges: ", len(thr_hop_edge[0]))
-            # print("Three Hop distance edges Loss, AUC, AUP:")
-            # print("Loss: ", thr_hop_loss)
-            # print("AUC: ", thr_hop_dt_auc)
-            # print("AUP: ", thr_hop_dt_aup)
-            
-            # get edges at distance 4
-            neigh_4_list = []
-            for node in del_nodes:
-                try:
-                    neigh_1 = set(graph.neighbors(node.item()))
-                    for n1 in neigh_1:
-                        neigh_2 = set(graph.neighbors(n1))
-                        for n2 in neigh_2:
-                            neigh_3 = set(graph.neighbors(n2))
-                            for n3 in neigh_3:
-                                if n3 not in neigh_1:
-                                    neigh_4 = set(graph.neighbors(n3))
-                                    pairings = [[n3, s] for s in neigh_4]
-                                    neigh_4_list.extend(pairings)
-                except:
-                    continue
-            
-
-            neigh_4_edge_tensor = torch.tensor(neigh_4_list).T
-            neg_edge_tensor_4 = torch.tensor(neg_res[:len(neigh_4_list)]).T
-
-            four_hop_logits = model.decode(z, neigh_4_edge_tensor, neg_edge_tensor_4).sigmoid()
-            four_hop_label = self.get_link_labels(neigh_4_edge_tensor, neg_edge_tensor_4)
-            four_hop_loss = F.binary_cross_entropy_with_logits(four_hop_logits, four_hop_label).cpu().item()
-            four_hop_dt_auc = roc_auc_score(four_hop_label.cpu(), four_hop_logits.cpu())
-            four_hop_dt_aup = average_precision_score(four_hop_label.cpu(), four_hop_logits.cpu())
-
-            print("Number of 4-hop edges: ", len(neigh_4_edge_tensor[0]))
-            print("Number of Negative edges: ", len(neg_edge_tensor_4[0]))
-            print("Two Hop distance edges Loss, AUC, AUP:")
-            print("Loss: ", four_hop_loss)
-            print("AUC: ", four_hop_dt_auc)
-            print("AUP: ", four_hop_dt_aup)
-
-
-            # _, fr_hop_edge, _, fr_hop_mask = k_hop_subgraph(pos_edge_index[:, df_index].flatten().unique(), 4, pos_edge_index, num_nodes=data.num_nodes)
-
-            # print("Len of 4-hop edges: ", len(fr_hop_edge))
-            # fr_hop_logits = model.decode(z, fr_hop_edge, neg_edge_index).sigmoid()
-            # fr_hop_label = self.get_link_labels(fr_hop_edge, neg_edge_index)
-            # fr_hop_loss = F.binary_cross_entropy_with_logits(fr_hop_logits, fr_hop_label).cpu().item()
-            # fr_hop_dt_auc = roc_auc_score(fr_hop_label.cpu(), fr_hop_logits.cpu())
-            # fr_hop_dt_aup = average_precision_score(fr_hop_label.cpu(), fr_hop_logits.cpu())
-
-            # print("Number of 4-hop edges: ", len(fr_hop_edge[0]))
+            # print("Number of 3-hop edges: ", len(neigh_3_edge_tensor[0]))
+            # print("Number of Negative edges: ", len(neg_edge_tensor_3[0]))
             # print("Two Hop distance edges Loss, AUC, AUP:")
-            # print("Loss: ", fr_hop_loss)
-            # print("AUC: ", fr_hop_dt_auc)
-            # print("AUP: ", fr_hop_dt_aup)
+            # print("Loss: ", three_hop_loss)
+            # print("AUC: ", three_hop_dt_auc)
+            # print("AUP: ", three_hop_dt_aup)
+            
+            # # get edges at distance 4
+            # neigh_4_list = []
+            # for node in del_nodes:
+            #     try:
+            #         neigh_1 = set(graph.neighbors(node.item()))
+            #         for n1 in neigh_1:
+            #             neigh_2 = set(graph.neighbors(n1))
+            #             for n2 in neigh_2:
+            #                 neigh_3 = set(graph.neighbors(n2))
+            #                 for n3 in neigh_3:
+            #                     if n3 not in neigh_1:
+            #                         neigh_4 = set(graph.neighbors(n3))
+            #                         pairings = [[n3, s] for s in neigh_4]
+            #                         neigh_4_list.extend(pairings)
+            #     except:
+            #         continue
+            
+
+            # neigh_4_edge_tensor = torch.tensor(neigh_4_list).T
+            # neg_edge_tensor_4 = torch.tensor(neg_res[:len(neigh_4_list)]).T
+
+            # four_hop_logits = model.decode(z, neigh_4_edge_tensor, neg_edge_tensor_4).sigmoid()
+            # four_hop_label = self.get_link_labels(neigh_4_edge_tensor, neg_edge_tensor_4)
+            # four_hop_loss = F.binary_cross_entropy_with_logits(four_hop_logits, four_hop_label).cpu().item()
+            # four_hop_dt_auc = roc_auc_score(four_hop_label.cpu(), four_hop_logits.cpu())
+            # four_hop_dt_aup = average_precision_score(four_hop_label.cpu(), four_hop_logits.cpu())
+
+            # print("Number of 4-hop edges: ", len(neigh_4_edge_tensor[0]))
+            # print("Number of Negative edges: ", len(neg_edge_tensor_4[0]))
+            # print("Two Hop distance edges Loss, AUC, AUP:")
+            # print("Loss: ", four_hop_loss)
+            # print("AUC: ", four_hop_dt_auc)
+            # print("AUP: ", four_hop_dt_aup)
 
         # DF AUC AUP
         if self.args.unlearning_model in ['original']:

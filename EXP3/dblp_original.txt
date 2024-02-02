@@ -1,0 +1,32 @@
+Dataset: DBLP
+
+For Complete Test set:
+Confusion matrix: 
+[[1511 1132]
+ [  54 2589]]
+Accuracy:  0.7756337495270526
+Precision:  0.6957807041117979
+--------------------------------------------------------------------
+wandb: Waiting for W&B process to finish... (success).
+wandb: 
+wandb: Run history:
+wandb:      epoch ▁▁▁▁▂▂▂▂▂▃▃▃▃▃▃▄▄▄▄▄▅▅▅▅▅▅▆▆▆▆▆▇▇▇▇▇▇███
+wandb: train_loss █▅▄▃▃▃▃▃▂▂▂▂▂▂▂▂▂▂▂▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁
+wandb: val_dt_auc ▁▃▄▆▆▆▆▇▇▇▇▇▇███████████████████████████
+wandb: val_dt_aup ▁▂▄▅▆▆▆▇▇▇▇▇▇▇▇█████████████████████████
+wandb:   val_loss █▃▃▂▂▂▂▂▂▂▂▂▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁
+wandb: 
+wandb: Run summary:
+wandb:             epoch 1999
+wandb:        train_loss 0.38868
+wandb:        val_df_auc nan
+wandb:        val_df_aup nan
+wandb: val_df_logit_mean nan
+wandb:  val_df_logit_std nan
+wandb:        val_dt_auc 0.96634
+wandb:        val_dt_aup 0.9713
+wandb:          val_loss 0.65773
+wandb: 
+wandb: You can sync this run to the cloud by running:
+wandb: wandb sync /home/yashpaneliya/mtp/wandb/offline-run-20240130_090118-w67y4g11
+wandb: Find logs at: ./wandb/offline-run-20240130_090118-w67y4g11/logs

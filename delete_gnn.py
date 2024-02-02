@@ -261,7 +261,7 @@ def main():
                 {'params': [p for n, p in model.named_parameters()], 'weight_decay': 0.0}
             ]
             print('parameters_to_optimize', [n for n, p in model.named_parameters()])
-        
+        # only del parameters will be optimized during unlearning
         optimizer = torch.optim.Adam(parameters_to_optimize, lr=args.lr)#, weight_decay=args.weight_decay)
     
     wandb.watch(model, log_freq=100)

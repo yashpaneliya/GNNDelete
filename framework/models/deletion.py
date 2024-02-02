@@ -20,6 +20,7 @@ class DeletionLayer(nn.Module):
         if mask is None:
             mask = self.mask
         
+        # masks for nodes of k-hop-subgraph of edges to be deleted
         if mask is not None:
             new_rep = x.clone()
             new_rep[mask] = torch.matmul(new_rep[mask], self.deletion_weight)

@@ -164,16 +164,18 @@ class GNNDeleteTrainer(Trainer):
             self.trainer_log['mi_logit_sub_before'] = mi_logit_sub_before
             self.trainer_log['mi_sucrate_sub_before'] = mi_sucrate_sub_before
 
-        # All node paris in S_Df without Df
-        ## S_Df 1 hop all pair mask
+
+        # NxN matrix
         sdf1_all_pair_mask = torch.zeros(data.num_nodes, data.num_nodes, dtype=torch.bool)
+        # generating all unique pairs of one hop nodes
         idx = torch.combinations(torch.arange(data.num_nodes)[data.sdf_node_1hop_mask], with_replacement=True).t()
+        # set mask for those pairs in matrix
         sdf1_all_pair_mask[idx[0], idx[1]] = True
         sdf1_all_pair_mask[idx[1], idx[0]] = True
 
         assert sdf1_all_pair_mask.sum().cpu() == data.sdf_node_1hop_mask.sum().cpu() * data.sdf_node_1hop_mask.sum().cpu()
 
-        ## Remove Df itself
+        ## unset mask for the pairs which are in deletion set in matrix
         sdf1_all_pair_mask[data.train_pos_edge_index[:, data.df_mask][0], data.train_pos_edge_index[:, data.df_mask][1]] = False
         sdf1_all_pair_mask[data.train_pos_edge_index[:, data.df_mask][1], data.train_pos_edge_index[:, data.df_mask][0]] = False
 
@@ -218,7 +220,12 @@ class GNNDeleteTrainer(Trainer):
             model.train()
 
             start_time = time.time()
+
+            # sdf_mask: mask for 2-hop neighbor edges of nodes in deletion set
+            # only generating node representations for 2-hop neighborhood nodes of deletion sets because we want to deal with them only
             z = model(data.x, data.train_pos_edge_index[:, data.sdf_mask])
+
+
             # z1, z2 = model(data.x, data.train_pos_edge_index[:, data.sdf_mask], return_all_emb=True)
             # print('current deletion weight', model.deletion1.deletion_weight.sum(), model.deletion2.deletion_weight.sum())
             # print('aaaaaa', z[data.sdf_node_2hop_mask].sum())
@@ -230,8 +237,14 @@ class GNNDeleteTrainer(Trainer):
                 num_nodes=data.num_nodes,
                 num_neg_samples=neg_size)
 
+            # 
             df_logits = model.decode(z, data.train_pos_edge_index[:, data.df_mask], neg_edge_index)
+            # Computing loss for deleted edge consistency
+            # df_logits[:neg_size] = logits of deleted edges
+            # df_logits[neg_size:] = logits of random negative edges which are not actually connected in original graph
             loss_r = loss_fct(df_logits[:neg_size], df_logits[neg_size:])
+
+
             # df_logits = model.decode(
             #     z, 
             #     data.train_pos_edge_index[:, data.df_mask].repeat(1, neg_size), 
@@ -243,6 +256,8 @@ class GNNDeleteTrainer(Trainer):
 
             # Local causality
             if sdf2_all_pair_without_df_mask.sum() != 0:
+                # logits_ori: logits of edges from original model
+                # logits_sdf: logits of edges in 2-hop neighborhood which are also not in deleted edges
                 logits_sdf = (z @ z.t())[sdf2_all_pair_without_df_mask].sigmoid()
                 loss_l = loss_fct(logits_sdf, logits_ori[sdf2_all_pair_without_df_mask].sigmoid())
                 # print('local proba', logits_sdf.shape, logits_sdf, logits_ori[sdf2_all_pair_without_df_mask].sigmoid())

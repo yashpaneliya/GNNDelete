@@ -6,7 +6,6 @@ checkpoint*
 wandb
 wandb/
 results/
-*csv
 
 
 # Byte-compiled / optimized / DLL files

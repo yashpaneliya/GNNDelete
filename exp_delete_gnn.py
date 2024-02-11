@@ -133,7 +133,8 @@ def main():
     # print(temp_pt)
     df_nonzero = df_mask_all.nonzero().squeeze()
 
-    df_global_idx = torch.randperm(df_nonzero.shape[0])[:df_size]
+    df_global_idx = [i for i in range(df_size)]
+    # df_global_idx = torch.randperm(df_nonzero.shape[0])[:df_size]
     # if args.seqlearn==False:
     #     df_global_idx = df_nonzero[:df_size]
     # elif args.seqlearn==True:
